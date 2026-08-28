@@ -34,6 +34,7 @@ export interface GatewaySpec {
   fallbackModels: readonly DiscoveredModel[];
   compat?: GatewayModel["compat"];
   catalogPaths: readonly string[];
+  catalogRequiresAuth?: boolean;
   parseCatalog(payloads: readonly unknown[]): DiscoveredModel[];
 }
 
@@ -106,14 +107,19 @@ export async function loadGatewayModels(
   fetcher: typeof fetch = fetch,
   agentDir = getAgentDir(),
   signal?: AbortSignal,
+  apiKey?: string,
 ): Promise<GatewayModel[]> {
   try {
+    if (spec.catalogRequiresAuth && !apiKey) throw new Error(`${spec.name} catalog requires an API key`);
     const timeout = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
     const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const payloads = await Promise.all(spec.catalogPaths.map(async (path) => {
       const url = `${spec.baseUrl}/${path.replace(/^\/+/, "")}`;
       const response = await fetcher(url, {
-        headers: { Accept: "application/json" },
+        headers: {
+          Accept: "application/json",
+          ...(spec.catalogRequiresAuth ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
         signal: requestSignal,
       });
       if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
@@ -143,7 +149,8 @@ export function createGatewayProvider(
     auth: { apiKey: envApiKeyAuth(`${spec.name} API key`, [spec.apiKeyEnv]) },
     models: getCachedOrFallbackModels(spec, agentDir),
     async fetchModels(context) {
-      return loadGatewayModels(spec, fetcher, agentDir, context.signal);
+      const apiKey = context.credential?.type === "api_key" ? context.credential.key : undefined;
+      return loadGatewayModels(spec, fetcher, agentDir, context.signal, apiKey);
     },
     api: openAICompletionsApi(),
   });

@@ -12,9 +12,11 @@ import {
   CLINE,
   GATEWAYS,
   KILO,
+  TOKENROUTER,
   parseAIHubMixCatalog,
   parseClineCatalog,
   parseKiloCatalog,
+  parseTokenRouterCatalog,
 } from "./providers.ts";
 
 const kiloCatalog = {
@@ -39,6 +41,15 @@ const aihubmixCatalog = {
     { id: "coding-glm-free", owned_by: "Z.AI" },
     { id: "gpt-image-2-free", owned_by: "OpenAI" },
     { id: "claude-paid", owned_by: "Anthropic" },
+  ],
+};
+
+const tokenrouterCatalog = {
+  data: [
+    { id: "qwen/model-free", supported_endpoint_types: ["openai"], tags: "text" },
+    { id: "nvidia/model:free", supported_endpoint_types: ["openai"], tags: "text" },
+    { id: "image/model-free", supported_endpoint_types: ["openai"], tags: "image" },
+    { id: "paid/model", supported_endpoint_types: ["openai"], tags: "text" },
   ],
 };
 
@@ -83,6 +94,7 @@ const clineRecommended = {
 function fakeFetch(input: string | URL | Request): Promise<Response> {
   const url = String(input);
   if (url.includes("kilo.ai")) return Promise.resolve(Response.json(kiloCatalog));
+  if (url.includes("tokenrouter.com")) return Promise.resolve(Response.json(tokenrouterCatalog));
   if (url.endsWith("recommended-models")) return Promise.resolve(Response.json(clineRecommended));
   if (url.includes("api.cline.bot")) return Promise.resolve(Response.json(clineCatalog));
   return Promise.resolve(Response.json(aihubmixCatalog));
@@ -105,7 +117,7 @@ function routedProvider(native: Provider, baseUrl: string): Provider {
   };
 }
 
-test("provider adapters keep only free chat/tool models", () => {
+test("provider adapters keep only free chat-compatible models", () => {
   const kilo = parseKiloCatalog(kiloCatalog);
   assert.deepEqual(kilo.map((model) => model.id), ["free/tools:free"]);
   assert.deepEqual(kilo[0].input, ["text", "image"]);
@@ -113,6 +125,9 @@ test("provider adapters keep only free chat/tool models", () => {
 
   const aihubmix = parseAIHubMixCatalog(aihubmixCatalog);
   assert.deepEqual(aihubmix.map((model) => model.id), ["coding-glm-free"]);
+
+  const tokenrouter = parseTokenRouterCatalog(tokenrouterCatalog);
+  assert.deepEqual(tokenrouter.map((model) => model.id), ["qwen/model-free", "nvidia/model:free"]);
 
   const cline = parseClineCatalog([clineCatalog, clineRecommended]);
   assert.deepEqual(cline.map((model) => model.id), [
@@ -124,22 +139,58 @@ test("provider adapters keep only free chat/tool models", () => {
   assert.deepEqual(cline[0].input, ["text", "image"]);
 });
 
+test("passes resolved API-key credentials to authenticated catalogs", async () => {
+  const agentDir = mkdtempSync(join(tmpdir(), "pi-tokenrouter-auth-"));
+  let authorization: string | null = null;
+  try {
+    const provider = createGatewayProvider(TOKENROUTER, (input, init) => {
+      authorization = new Headers(init?.headers).get("Authorization");
+      return fakeFetch(input);
+    }, agentDir);
+    await provider.refreshModels!({
+      credential: { type: "api_key", key: "secret" },
+      allowNetwork: true,
+      signal: new AbortController().signal,
+      async publish(publication) {
+        publication.update?.();
+        return true;
+      },
+    });
+    assert.equal(authorization, "Bearer secret");
+    assert.deepEqual(provider.getModels().map((model) => model.id), [
+      "qwen/qwen3.8-max-free",
+      "qwen/model-free",
+      "nvidia/model:free",
+    ]);
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
 test("shared loader fetches all adapter paths, caches, and falls back offline", async () => {
   const agentDir = mkdtempSync(join(tmpdir(), "pi-gateways-cache-"));
   try {
     for (const spec of GATEWAYS) {
       const requested: string[] = [];
+      const authorizations: Array<string | null> = [];
       const live = await loadGatewayModels(spec, (input, init) => {
         requested.push(String(input));
+        authorizations.push(new Headers(init?.headers).get("Authorization"));
         return fakeFetch(input);
-      }, agentDir);
+      }, agentDir, undefined, "test-key");
       assert.deepEqual(requested, spec.catalogPaths.map((path) => `${spec.baseUrl}/${path}`));
+      assert.ok(authorizations.every((header) =>
+        spec.catalogRequiresAuth ? header === "Bearer test-key" : header === null
+      ));
       const path = join(agentDir, spec.id, "models.json");
       assert.equal(existsSync(path), true);
       assert.equal(statSync(path).mode & 0o777, 0o600);
       assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), JSON.parse(JSON.stringify(live)));
       const offline = () => Promise.resolve(new Response("down", { status: 503 }));
-      assert.deepEqual(await loadGatewayModels(spec, offline, agentDir), JSON.parse(JSON.stringify(live)));
+      assert.deepEqual(
+        await loadGatewayModels(spec, offline, agentDir, undefined, "test-key"),
+        JSON.parse(JSON.stringify(live)),
+      );
       writeFileSync(path, "not json");
       assert.equal(getCachedOrFallbackModels(spec, agentDir)[0].id, spec.fallbackModels[0].id);
     }
@@ -161,7 +212,7 @@ test("registers all native providers and refreshes without blocking startup", as
     },
   } as any);
 
-  assert.deepEqual(providers.map((provider) => provider.id), ["kilo", "aihubmix", "cline"]);
+  assert.deepEqual(providers.map((provider) => provider.id), ["kilo", "aihubmix", "cline", "tokenrouter"]);
   assert.ok(providers.every((provider) => provider.auth.apiKey));
   const returned = sessionStart?.({}, { modelRegistry: { refresh: () => pending } });
   assert.equal(returned, undefined);
@@ -199,11 +250,12 @@ test("models.json baseUrl and route-marker wrapping survive dynamic refresh", as
 
 test("provider constants use documented endpoints and API-key variables", () => {
   assert.deepEqual(
-    [KILO, AIHUBMIX, CLINE].map(({ id, baseUrl, apiKeyEnv }) => ({ id, baseUrl, apiKeyEnv })),
+    [KILO, AIHUBMIX, CLINE, TOKENROUTER].map(({ id, baseUrl, apiKeyEnv }) => ({ id, baseUrl, apiKeyEnv })),
     [
       { id: "kilo", baseUrl: "https://api.kilo.ai/api/gateway", apiKeyEnv: "KILO_API_KEY" },
       { id: "aihubmix", baseUrl: "https://aihubmix.com/v1", apiKeyEnv: "AIHUBMIX_API_KEY" },
       { id: "cline", baseUrl: "https://api.cline.bot/api/v1", apiKeyEnv: "CLINE_API_KEY" },
+      { id: "tokenrouter", baseUrl: "https://api.tokenrouter.com/v1", apiKeyEnv: "TOKENROUTER_API_KEY" },
     ],
   );
 });

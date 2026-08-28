@@ -17,6 +17,11 @@ type RichCatalogEntry = {
 };
 
 type AIHubMixEntry = { id?: string; owned_by?: string };
+type TokenRouterEntry = {
+  id?: string;
+  supported_endpoint_types?: string[];
+  tags?: string;
+};
 type RecommendedEntry = { id?: string; name?: string };
 
 function entries(payload: unknown): unknown[] {
@@ -86,6 +91,36 @@ function isExplicitlyFree(model: RichCatalogEntry): boolean {
     Number.isFinite(completion) &&
     prompt === 0 &&
     completion === 0;
+}
+
+const TOKENROUTER_CHAT_ENDPOINTS = new Set([
+  "openai",
+  "openai-response",
+  "anthropic",
+  "anthropic-compatible",
+  "gemini",
+]);
+
+function isTokenRouterTextChatModel(model: TokenRouterEntry): boolean {
+  const tags = (model.tags ?? "").toLowerCase();
+  if (tags.includes("text")) return true;
+  if (["image", "video", "audio"].some((tag) => tags.includes(tag))) return false;
+  return (model.supported_endpoint_types ?? []).some((type) => TOKENROUTER_CHAT_ENDPOINTS.has(type));
+}
+
+export function parseTokenRouterCatalog(payload: unknown): DiscoveredModel[] {
+  return (entries(payload) as TokenRouterEntry[])
+    .filter((model): model is TokenRouterEntry & { id: string } =>
+      Boolean(model.id) &&
+      (model.id!.endsWith(":free") || model.id!.endsWith("-free")) &&
+      isTokenRouterTextChatModel(model)
+    )
+    .map((model) => ({
+      id: model.id,
+      name: model.id,
+      reasoning: /(?:reasoning|thinking|:think|-think)/i.test(model.id),
+      input: (model.tags ?? "").toLowerCase().includes("image") ? ["text", "image"] : ["text"],
+    }));
 }
 
 export function parseClineCatalog(payloads: readonly unknown[]): DiscoveredModel[] {
@@ -165,4 +200,24 @@ export const CLINE: GatewaySpec = {
   parseCatalog: parseClineCatalog,
 };
 
-export const GATEWAYS = [KILO, AIHUBMIX, CLINE] as const;
+export const TOKENROUTER: GatewaySpec = {
+  id: "tokenrouter",
+  name: "TokenRouter",
+  baseUrl: "https://api.tokenrouter.com/v1",
+  apiKeyEnv: "TOKENROUTER_API_KEY",
+  compat: {
+    supportsDeveloperRole: false,
+    supportsReasoningEffort: false,
+    supportsStore: false,
+    maxTokensField: "max_tokens",
+    requiresReasoningContentOnAssistantMessages: true,
+  },
+  fallbackModels: [
+    { id: "qwen/qwen3.8-max-free", name: "qwen/qwen3.8-max-free" },
+  ],
+  catalogPaths: ["models"],
+  catalogRequiresAuth: true,
+  parseCatalog: ([payload]) => parseTokenRouterCatalog(payload),
+};
+
+export const GATEWAYS = [KILO, AIHUBMIX, CLINE, TOKENROUTER] as const;
