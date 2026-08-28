@@ -20,7 +20,7 @@ pi
 
 You can instead use `/login` and select **Kilo Gateway**, **AIHubMix**, or **Cline**. Pi stores each key in `auth.json`.
 
-The extension exposes only free chat/tool-capable models. Kilo uses its catalog's `isFree` and capability metadata. AIHubMix identifies free models by its documented `-free` suffix and conservatively omits IDs for non-chat endpoint families because its model list has no capability metadata. Cline joins its full model metadata with `recommended-models.free`; ClinePass is intentionally not registered.
+The extension exposes only free chat/tool-capable models. Kilo uses its catalog's `isFree` and capability metadata. AIHubMix identifies free models by its documented `-free` suffix and conservatively omits IDs for non-chat endpoint families because its model list has no capability metadata. Cline combines `recommended-models.free` with tool-capable catalog entries that are explicitly free-marked and zero-priced; ClinePass is intentionally not registered.
 
 Successful catalogs are cached with `0600` permissions at:
 

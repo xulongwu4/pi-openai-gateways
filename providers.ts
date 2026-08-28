@@ -74,6 +74,20 @@ export function parseAIHubMixCatalog(payload: unknown): DiscoveredModel[] {
     .map((model) => ({ id: model.id, name: model.id }));
 }
 
+function isExplicitlyFree(model: RichCatalogEntry): boolean {
+  if (!model.id) return false;
+  const prompt = Number(model.pricing?.prompt);
+  const completion = Number(model.pricing?.completion);
+  const markedFree = model.id.endsWith(":free") || model.id === "openrouter/free";
+  return markedFree &&
+    model.pricing?.prompt !== undefined &&
+    model.pricing?.completion !== undefined &&
+    Number.isFinite(prompt) &&
+    Number.isFinite(completion) &&
+    prompt === 0 &&
+    completion === 0;
+}
+
 export function parseClineCatalog(payloads: readonly unknown[]): DiscoveredModel[] {
   const catalog = entries(payloads[0]) as RichCatalogEntry[];
   const recommended = payloads[1] as { free?: RecommendedEntry[] } | undefined;
@@ -83,7 +97,9 @@ export function parseClineCatalog(payloads: readonly unknown[]): DiscoveredModel
   const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   return catalog
     .filter((model): model is RichCatalogEntry & { id: string } =>
-      Boolean(model.id) && free.has(model.id!) && (model.supported_parameters ?? []).includes("tools")
+      Boolean(model.id) &&
+      (free.has(model.id!) || isExplicitlyFree(model)) &&
+      (model.supported_parameters ?? []).includes("tools")
     )
     .map((model) => richModel(model, {
       name: free.get(model.id)?.name ?? model.name,

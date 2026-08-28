@@ -53,6 +53,25 @@ const clineCatalog = {
       pricing: { prompt: "0.000001", completion: "0.000002" },
       architecture: { input_modalities: ["text", "image"] },
     },
+    {
+      id: "catalog/model:free",
+      name: "Catalog Free",
+      supported_parameters: ["tools"],
+      pricing: { prompt: "0", completion: "0" },
+    },
+    {
+      id: "openrouter/free",
+      name: "OpenRouter Free",
+      supported_parameters: ["tools"],
+      pricing: { prompt: 0, completion: 0 },
+    },
+    {
+      id: "zero-but-not-free",
+      name: "Zero but paid",
+      supported_parameters: ["tools"],
+      pricing: { prompt: "0", completion: "0" },
+    },
+    { id: "missing-price:free", name: "Unknown price", supported_parameters: ["tools"] },
     { id: "paid/model", name: "Paid", supported_parameters: ["tools"] },
   ],
 };
@@ -96,8 +115,12 @@ test("provider adapters keep only free chat/tool models", () => {
   assert.deepEqual(aihubmix.map((model) => model.id), ["coding-glm-free"]);
 
   const cline = parseClineCatalog([clineCatalog, clineRecommended]);
-  assert.deepEqual(cline.map((model) => model.id), ["z-ai/glm-free"]);
-  assert.deepEqual(cline[0].cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual(cline.map((model) => model.id), [
+    "z-ai/glm-free",
+    "catalog/model:free",
+    "openrouter/free",
+  ]);
+  assert.ok(cline.every((model) => Object.values(model.cost ?? {}).every((cost) => cost === 0)));
   assert.deepEqual(cline[0].input, ["text", "image"]);
 });
 
