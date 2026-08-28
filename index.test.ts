@@ -73,6 +73,7 @@ const clineCatalog = {
     {
       id: "openrouter/free",
       name: "OpenRouter Free",
+      top_provider: { max_completion_tokens: 0 },
       supported_parameters: ["tools"],
       pricing: { prompt: 0, completion: 0 },
     },
@@ -135,8 +136,51 @@ test("provider adapters keep only free chat-compatible models", () => {
     "catalog/model:free",
     "openrouter/free",
   ]);
-  assert.ok(cline.every((model) => Object.values(model.cost ?? {}).every((cost) => cost === 0)));
   assert.deepEqual(cline[0].input, ["text", "image"]);
+});
+
+test("Cline keeps a partial free catalog and normalizes zero token limits", async () => {
+  const agentDir = mkdtempSync(join(tmpdir(), "pi-cline-partial-"));
+  try {
+    const models = await loadGatewayModels(CLINE, (input) =>
+      String(input).endsWith("recommended-models")
+        ? Promise.resolve(new Response("down", { status: 503 }))
+        : fakeFetch(input), agentDir);
+    assert.deepEqual(models.map((model) => model.id), ["catalog/model:free", "openrouter/free"]);
+    assert.equal(models.find((model) => model.id === "openrouter/free")?.maxTokens, 16_384);
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("zero-cost models survive the cache round trip even when priced in the catalog", async () => {
+  const agentDir = mkdtempSync(join(tmpdir(), "pi-kilo-priced-"));
+  try {
+    const priced = {
+      data: [{
+        id: "vendor/model",
+        name: "Priced but free",
+        isFree: true,
+        supported_parameters: ["tools"],
+        pricing: { prompt: "0.0000005", completion: "0.000001" },
+      }, {
+        id: "vendor/other",
+        name: "Also free",
+        isFree: true,
+        supported_parameters: ["tools"],
+      }],
+    };
+    const live = await loadGatewayModels(KILO, () => Promise.resolve(Response.json(priced)), agentDir);
+    assert.deepEqual(live.map((model) => model.id), ["vendor/model", "vendor/other"]);
+    assert.deepEqual(live[0].cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    assert.notEqual(live[0].cost, live[1].cost, "each model needs its own cost object");
+    assert.deepEqual(
+      getCachedOrFallbackModels(KILO, agentDir).map((model) => model.id),
+      ["vendor/model", "vendor/other"],
+    );
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+  }
 });
 
 test("passes resolved API-key credentials to authenticated catalogs", async () => {
@@ -178,6 +222,7 @@ test("shared loader fetches all adapter paths, caches, and falls back offline", 
         authorizations.push(new Headers(init?.headers).get("Authorization"));
         return fakeFetch(input);
       }, agentDir, undefined, "test-key");
+      assert.ok(live.every((model) => Object.values(model.cost).every((cost) => cost === 0)));
       assert.deepEqual(requested, spec.catalogPaths.map((path) => `${spec.baseUrl}/${path}`));
       assert.ok(authorizations.every((header) =>
         spec.catalogRequiresAuth ? header === "Bearer test-key" : header === null
@@ -191,6 +236,14 @@ test("shared loader fetches all adapter paths, caches, and falls back offline", 
         await loadGatewayModels(spec, offline, agentDir, undefined, "test-key"),
         JSON.parse(JSON.stringify(live)),
       );
+      if (spec === CLINE) {
+        writeFileSync(path, JSON.stringify([{
+          ...live[0],
+          id: "paid/model",
+          cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+        }]));
+        assert.equal(getCachedOrFallbackModels(spec, agentDir)[0].id, spec.fallbackModels[0].id);
+      }
       writeFileSync(path, "not json");
       assert.equal(getCachedOrFallbackModels(spec, agentDir)[0].id, spec.fallbackModels[0].id);
     }

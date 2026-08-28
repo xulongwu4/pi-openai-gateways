@@ -18,7 +18,6 @@ export type DiscoveredModel = Pick<GatewayModel, "id"> & Partial<
     | "reasoning"
     | "thinkingLevelMap"
     | "input"
-    | "cost"
     | "contextWindow"
     | "maxTokens"
     | "headers"
@@ -38,7 +37,16 @@ export interface GatewaySpec {
   parseCatalog(payloads: readonly unknown[]): DiscoveredModel[];
 }
 
+// Every gateway registered here exposes free models only, so cost is zero by
+// construction. materialize() is the single writer and isZeroCost() the single
+// reader; keeping them in one place stops the cache validator from rejecting
+// catalogs that materialize() itself produced.
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+function isZeroCost(cost: GatewayModel["cost"] | undefined): boolean {
+  return Boolean(cost) &&
+    cost!.input === 0 && cost!.output === 0 && cost!.cacheRead === 0 && cost!.cacheWrite === 0;
+}
 
 function materialize(spec: GatewaySpec, model: DiscoveredModel): GatewayModel {
   return {
@@ -50,7 +58,7 @@ function materialize(spec: GatewaySpec, model: DiscoveredModel): GatewayModel {
     reasoning: model.reasoning ?? false,
     thinkingLevelMap: model.thinkingLevelMap,
     input: model.input ?? ["text"],
-    cost: model.cost ?? ZERO_COST,
+    cost: { ...ZERO_COST },
     contextWindow: model.contextWindow ?? 128_000,
     maxTokens: model.maxTokens ?? 16_384,
     headers: model.headers,
@@ -74,6 +82,7 @@ function loadCachedModels(spec: GatewaySpec, agentDir: string): GatewayModel[] |
         model.provider !== spec.id ||
         model.api !== "openai-completions" ||
         !Array.isArray(model.input) ||
+        !isZeroCost(model.cost) ||
         typeof model.contextWindow !== "number" ||
         typeof model.maxTokens !== "number"
       )
@@ -113,7 +122,7 @@ export async function loadGatewayModels(
     if (spec.catalogRequiresAuth && !apiKey) throw new Error(`${spec.name} catalog requires an API key`);
     const timeout = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
     const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    const payloads = await Promise.all(spec.catalogPaths.map(async (path) => {
+    const results = await Promise.allSettled(spec.catalogPaths.map(async (path) => {
       const url = `${spec.baseUrl}/${path.replace(/^\/+/, "")}`;
       const response = await fetcher(url, {
         headers: {
@@ -125,6 +134,7 @@ export async function loadGatewayModels(
       if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
       return response.json();
     }));
+    const payloads = results.map((result) => result.status === "fulfilled" ? result.value : undefined);
     const discovered = spec.parseCatalog(payloads);
     const models = [...new Map(
       discovered.map((model) => [model.id, materialize(spec, model)] as const),

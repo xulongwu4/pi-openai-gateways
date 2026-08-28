@@ -22,9 +22,11 @@ pi
 
 You can instead use `/login` and select **Kilo Gateway**, **AIHubMix**, **Cline**, or **TokenRouter**. Pi stores each key in `auth.json`.
 
-The extension exposes only free chat-compatible models. Kilo uses its catalog's `isFree` and capability metadata. AIHubMix identifies free models by its documented `-free` suffix and conservatively omits IDs for non-chat endpoint families because its model list has no capability metadata. Cline combines `recommended-models.free` with tool-capable catalog entries that are explicitly free-marked and zero-priced; ClinePass is intentionally not registered. TokenRouter keeps text-chat models whose IDs end in `-free` or `:free`; its authenticated model catalog receives the resolved TokenRouter API key.
+The extension exposes only free chat-compatible models. Kilo accepts a catalog entry's `isFree` flag or a `:free` ID suffix, then requires tool capability. AIHubMix identifies free models by its documented `-free` suffix and conservatively omits IDs for non-chat endpoint families because its model list has no capability metadata. Cline combines `recommended-models.free` with tool-capable catalog entries that are explicitly free-marked and zero-priced; ClinePass is intentionally not registered. TokenRouter keeps text-chat models whose IDs end in `-free` or `:free`; its authenticated model catalog receives the resolved TokenRouter API key.
 
-Successful catalogs are cached with `0600` permissions at:
+All exposed models are registered at zero cost. Cline is the only provider reading two endpoints, and only one direction degrades: if `recommended-models` fails, models are still derived from the main catalog and that reduced list is cached until the next successful refresh. If the main catalog fails, no models can be derived at all and the provider falls back to its cached or built-in list.
+
+Catalogs are cached with `0600` permissions at:
 
 - `$PI_CODING_AGENT_DIR/kilo/models.json`
 - `$PI_CODING_AGENT_DIR/aihubmix/models.json`
