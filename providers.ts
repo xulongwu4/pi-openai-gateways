@@ -1,0 +1,152 @@
+import type { DiscoveredModel, GatewaySpec } from "./gateway.ts";
+
+type RichCatalogEntry = {
+  id?: string;
+  name?: string;
+  isFree?: boolean;
+  context_length?: number;
+  architecture?: { modality?: string; input_modalities?: string[] };
+  top_provider?: { context_length?: number; max_completion_tokens?: number };
+  supported_parameters?: string[];
+  pricing?: {
+    prompt?: string | number;
+    completion?: string | number;
+    input_cache_read?: string | number;
+    input_cache_write?: string | number;
+  };
+};
+
+type AIHubMixEntry = { id?: string; owned_by?: string };
+type RecommendedEntry = { id?: string; name?: string };
+
+function entries(payload: unknown): unknown[] {
+  if (!payload || typeof payload !== "object") return [];
+  const data = (payload as { data?: unknown }).data;
+  return Array.isArray(data) ? data : [];
+}
+
+function perMillion(value: string | number | undefined): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed * 1_000_000 : 0;
+}
+
+function richModel(
+  model: RichCatalogEntry & { id: string },
+  overrides: Pick<DiscoveredModel, "name" | "cost"> | undefined = undefined,
+): DiscoveredModel {
+  const parameters = model.supported_parameters ?? [];
+  const modalities = model.architecture?.input_modalities ?? [];
+  return {
+    id: model.id,
+    name: overrides?.name ?? model.name,
+    reasoning: ["reasoning", "include_reasoning", "reasoning_effort"].some((key) => parameters.includes(key)),
+    input: modalities.includes("image") || model.architecture?.modality?.includes("image")
+      ? ["text", "image"]
+      : ["text"],
+    cost: overrides?.cost ?? {
+      input: perMillion(model.pricing?.prompt),
+      output: perMillion(model.pricing?.completion),
+      cacheRead: perMillion(model.pricing?.input_cache_read),
+      cacheWrite: perMillion(model.pricing?.input_cache_write),
+    },
+    contextWindow: model.context_length || model.top_provider?.context_length,
+    maxTokens: model.top_provider?.max_completion_tokens,
+  };
+}
+
+export function parseKiloCatalog(payload: unknown): DiscoveredModel[] {
+  return (entries(payload) as RichCatalogEntry[])
+    .filter((model): model is RichCatalogEntry & { id: string } =>
+      Boolean(model.id) &&
+      (model.isFree === true || model.id!.endsWith(":free")) &&
+      (model.supported_parameters ?? []).includes("tools")
+    )
+    .map((model) => richModel(model));
+}
+
+const NON_CHAT_MODEL = /(?:audio|embed|image|ocr|rerank|speech|transcrib|tts)/i;
+
+export function parseAIHubMixCatalog(payload: unknown): DiscoveredModel[] {
+  return (entries(payload) as AIHubMixEntry[])
+    .filter((model): model is AIHubMixEntry & { id: string } =>
+      Boolean(model.id) && model.id!.endsWith("-free") && !NON_CHAT_MODEL.test(model.id!)
+    )
+    .map((model) => ({ id: model.id, name: model.id }));
+}
+
+export function parseClineCatalog(payloads: readonly unknown[]): DiscoveredModel[] {
+  const catalog = entries(payloads[0]) as RichCatalogEntry[];
+  const recommended = payloads[1] as { free?: RecommendedEntry[] } | undefined;
+  const free = new Map(
+    (recommended?.free ?? []).flatMap((model) => model.id ? [[model.id, model] as const] : []),
+  );
+  const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  return catalog
+    .filter((model): model is RichCatalogEntry & { id: string } =>
+      Boolean(model.id) && free.has(model.id!) && (model.supported_parameters ?? []).includes("tools")
+    )
+    .map((model) => richModel(model, {
+      name: free.get(model.id)?.name ?? model.name,
+      cost: zeroCost,
+    }));
+}
+
+export const KILO: GatewaySpec = {
+  id: "kilo",
+  name: "Kilo Gateway",
+  baseUrl: "https://api.kilo.ai/api/gateway",
+  apiKeyEnv: "KILO_API_KEY",
+  compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter" },
+  fallbackModels: [
+    {
+      id: "kilo-auto/free",
+      name: "Auto Free",
+      reasoning: true,
+      input: ["text"],
+      contextWindow: 256_000,
+      maxTokens: 10_000,
+    },
+  ],
+  catalogPaths: ["models"],
+  parseCatalog: ([payload]) => parseKiloCatalog(payload),
+};
+
+export const AIHUBMIX: GatewaySpec = {
+  id: "aihubmix",
+  name: "AIHubMix",
+  baseUrl: "https://aihubmix.com/v1",
+  apiKeyEnv: "AIHUBMIX_API_KEY",
+  compat: {
+    supportsDeveloperRole: false,
+    supportsReasoningEffort: false,
+    supportsStore: false,
+    maxTokensField: "max_tokens",
+  },
+  fallbackModels: [
+    { id: "coding-glm-5.3-free", name: "coding-glm-5.3-free" },
+  ],
+  catalogPaths: ["models"],
+  parseCatalog: ([payload]) => parseAIHubMixCatalog(payload),
+};
+
+export const CLINE: GatewaySpec = {
+  id: "cline",
+  name: "Cline",
+  baseUrl: "https://api.cline.bot/api/v1",
+  apiKeyEnv: "CLINE_API_KEY",
+  compat: { supportsDeveloperRole: false, supportsStore: false, maxTokensField: "max_tokens" },
+  fallbackModels: [
+    {
+      id: "z-ai/glm-5.3-flash",
+      name: "glm-5.3-flash",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1_310_720,
+      maxTokens: 131_072,
+    },
+  ],
+  catalogPaths: ["ai/cline/models", "ai/cline/recommended-models"],
+  parseCatalog: parseClineCatalog,
+};
+
+export const GATEWAYS = [KILO, AIHUBMIX, CLINE] as const;

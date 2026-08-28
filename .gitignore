@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+*.tgz
+.env
+.env.*
+!.env.example
+.DS_Store
+.pi/
