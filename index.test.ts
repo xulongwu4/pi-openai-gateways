@@ -191,6 +191,18 @@ test("passes resolved API-key credentials to authenticated catalogs", async () =
       authorization = new Headers(init?.headers).get("Authorization");
       return fakeFetch(input);
     }, agentDir);
+    assert.deepEqual(provider.getModels().map((model) => model.id), ["qwen/qwen3.8-max-free"]);
+    await provider.refreshModels!({
+      credential: { type: "api_key", key: "secret" },
+      stored: { models: [], checkedAt: 0 },
+      allowNetwork: false,
+      signal: new AbortController().signal,
+      async publish(publication) {
+        publication.update?.();
+        return true;
+      },
+    });
+    assert.deepEqual(provider.getModels().map((model) => model.id), ["qwen/qwen3.8-max-free"]);
     await provider.refreshModels!({
       credential: { type: "api_key", key: "secret" },
       allowNetwork: true,
@@ -202,7 +214,6 @@ test("passes resolved API-key credentials to authenticated catalogs", async () =
     });
     assert.equal(authorization, "Bearer secret");
     assert.deepEqual(provider.getModels().map((model) => model.id), [
-      "qwen/qwen3.8-max-free",
       "qwen/model-free",
       "nvidia/model:free",
     ]);

@@ -152,18 +152,29 @@ export function createGatewayProvider(
   fetcher: typeof fetch = fetch,
   agentDir?: string,
 ): Provider<"openai-completions"> {
-  return createProvider({
+  let fallback: GatewayModel[] | undefined;
+  // createProvider merges dynamic models into the baseline permanently; keep
+  // baseline empty so fetched models replace (not merge with) the fallback list.
+  const provider = createProvider({
     id: spec.id,
     name: spec.name,
     baseUrl: spec.baseUrl,
     auth: { apiKey: envApiKeyAuth(`${spec.name} API key`, [spec.apiKeyEnv]) },
-    models: getCachedOrFallbackModels(spec, agentDir),
+    models: [],
     async fetchModels(context) {
       const apiKey = context.credential?.type === "api_key" ? context.credential.key : undefined;
       return loadGatewayModels(spec, fetcher, agentDir, context.signal, apiKey);
     },
     api: openAICompletionsApi(),
   });
+
+  return {
+    ...provider,
+    getModels() {
+      const models = provider.getModels();
+      return models.length > 0 ? models : (fallback ??= getCachedOrFallbackModels(spec, agentDir));
+    },
+  };
 }
 
 export function installGateways(
